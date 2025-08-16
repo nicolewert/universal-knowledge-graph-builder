@@ -41,4 +41,29 @@ export default defineSchema({
     error_message: v.optional(v.string()),
   }).index('by_upload_timestamp', ['upload_timestamp'])
     .index('by_status', ['processing_status']),
+
+  concepts: defineTable({
+    name: v.string(),
+    description: v.string(),
+    document_ids: v.array(v.id('documents')),
+    confidence_score: v.number(),
+    category: v.optional(v.string()),
+    aliases: v.array(v.string()),
+    created_timestamp: v.number(),
+  }).index('by_name', ['name'])
+    .index('by_created_timestamp', ['created_timestamp'])
+    .index('by_confidence', ['confidence_score']),
+
+  relationships: defineTable({
+    source_concept_id: v.id('concepts'),
+    target_concept_id: v.id('concepts'),
+    relationship_type: v.string(),
+    strength: v.number(),
+    context: v.string(),
+    document_id: v.id('documents'),
+    created_timestamp: v.number(),
+  }).index('by_source', ['source_concept_id'])
+    .index('by_target', ['target_concept_id'])
+    .index('by_document', ['document_id'])
+    .index('by_strength', ['strength']),
 })

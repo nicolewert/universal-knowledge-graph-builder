@@ -158,10 +158,10 @@ export const scrapeUrl = action({
         
         // Remove HTML tags and extract text content
         let cleanContent = html
-          .replace(/<script[^>]*>.*?<\/script>/gis, '') // Remove scripts
-          .replace(/<style[^>]*>.*?<\/style>/gis, '') // Remove styles
-          .replace(/<noscript[^>]*>.*?<\/noscript>/gis, '') // Remove noscript
-          .replace(/<!--.*?-->/gis, '') // Remove comments
+          .replace(/<script[^>]*>.*?<\/script>/gi, '') // Remove scripts
+          .replace(/<style[^>]*>.*?<\/style>/gi, '') // Remove styles
+          .replace(/<noscript[^>]*>.*?<\/noscript>/gi, '') // Remove noscript
+          .replace(/<!--.*?-->/gi, '') // Remove comments
           .replace(/<[^>]*>/g, ' ') // Remove HTML tags
           .replace(/&quot;/g, '"')
           .replace(/&amp;/g, '&')

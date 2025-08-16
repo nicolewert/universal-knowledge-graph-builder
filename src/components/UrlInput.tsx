@@ -99,8 +99,7 @@ export const UrlInput: React.FC<UrlInputProps> = ({ onUrlSubmit }) => {
           </div>
           <Progress 
             value={progress} 
-            className="w-full" 
-            indicatorClassName={documentId ? 'bg-green-500' : ''} 
+            className="w-full"
           />
         </div>
       )}
