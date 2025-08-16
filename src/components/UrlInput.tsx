@@ -4,61 +4,39 @@ import React, { useState } from 'react';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
+import { Progress } from './ui/progress';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
-import { AlertCircle, Loader2 } from 'lucide-react';
-import { useAction } from 'convex/react';
-import { api } from '../../convex/_generated/api';
+import { AlertCircle, Loader2, Link2, Check } from 'lucide-react';
+import { useUrlScraping } from '@/hooks/useUrlScraping';
 
 interface UrlInputProps {
   onUrlSubmit?: (url: string) => Promise<void>;
 }
 
 export const UrlInput: React.FC<UrlInputProps> = ({ onUrlSubmit }) => {
-  const [url, setUrl] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const scrapeUrl = useAction(api.documents.scrapeUrl);
-
-  const validateUrl = (inputUrl: string): boolean => {
-    try {
-      const urlObject = new URL(inputUrl);
-      return urlObject.protocol === 'http:' || urlObject.protocol === 'https:';
-    } catch {
-      return false;
-    }
-  };
+  const [inputUrl, setInputUrl] = useState<string>('');
+  const { 
+    url, 
+    progress, 
+    error, 
+    documentId, 
+    scrapeUrl, 
+    resetScraping 
+  } = useUrlScraping();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setSuccess(null);
 
-    if (!validateUrl(url)) {
-      setError('Please enter a valid HTTP or HTTPS URL');
-      return;
+    if (onUrlSubmit) {
+      await onUrlSubmit(inputUrl);
+    } else {
+      await scrapeUrl(inputUrl);
     }
+  };
 
-    setIsLoading(true);
-    try {
-      if (onUrlSubmit) {
-        // Use custom handler if provided
-        await onUrlSubmit(url);
-      } else {
-        // Use built-in Convex scraping
-        const result = await scrapeUrl({ url });
-        if (result.success) {
-          setSuccess(`Successfully scraped: ${result.title}`);
-        } else {
-          setError(result.error || 'Failed to scrape URL');
-        }
-      }
-      setUrl(''); // Clear input after successful submission
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'An error occurred');
-    } finally {
-      setIsLoading(false);
-    }
+  const handleReset = () => {
+    resetScraping();
+    setInputUrl('');
   };
 
   return (
@@ -70,22 +48,24 @@ export const UrlInput: React.FC<UrlInputProps> = ({ onUrlSubmit }) => {
             id="url-input"
             type="text"
             placeholder="https://example.com"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            disabled={isLoading}
+            value={inputUrl}
+            onChange={(e) => setInputUrl(e.target.value)}
+            disabled={progress > 0}
             className="flex-grow"
           />
           <Button 
             type="submit" 
-            disabled={isLoading || !url}
+            disabled={!inputUrl || progress > 0}
           >
-            {isLoading ? (
+            {progress > 0 ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 Scraping
               </>
             ) : (
-              'Scrape'
+              <>
+                <Link2 className="mr-2 h-4 w-4" />Scrape
+              </>
             )}
           </Button>
         </form>
@@ -99,12 +79,30 @@ export const UrlInput: React.FC<UrlInputProps> = ({ onUrlSubmit }) => {
         </Alert>
       )}
 
-      {success && (
-        <Alert>
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Success</AlertTitle>
-          <AlertDescription>{success}</AlertDescription>
-        </Alert>
+      {(progress > 0 || documentId) && (
+        <div className="mt-4 space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-sm truncate max-w-[70%]">
+              {documentId ? 'Scraping Complete' : `Scraping: ${url}`}
+            </span>
+            {documentId ? (
+              <Check className="text-green-500 h-5 w-5" />
+            ) : (
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={handleReset}
+              >
+                Cancel
+              </Button>
+            )}
+          </div>
+          <Progress 
+            value={progress} 
+            className="w-full" 
+            indicatorClassName={documentId ? 'bg-green-500' : ''} 
+          />
+        </div>
       )}
     </div>
   );

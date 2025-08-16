@@ -120,29 +120,125 @@ export const scrapeUrl = action({
         processing_status: 'processing',
       })
 
-      // Simulate content extraction (replace with actual Playwright scraping)
-      const title = `Document from ${new URL(args.url).hostname}`
-      const content = `Content scraped from ${args.url}\n\nThis is placeholder content. In a real implementation, this would use Playwright MCP to extract actual content from the webpage.`
+      try {
+        // Use WebFetch with timeout handling
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+        
+        const response = await fetch(args.url, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; URLScraper/1.0)',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        })
+        
+        clearTimeout(timeoutId)
 
-      // Update document with scraped content
-      await ctx.runMutation(api.documents.updateDocumentStatus, {
-        id: documentId,
-        processing_status: 'completed',
-      })
+        if (!response.ok) {
+          throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`)
+        }
 
-      // Update the document with the actual content and completed status
-      await ctx.runMutation(api.documents.updateDocumentContent, {
-        id: documentId,
-        title,
-        content,
-      })
+        const html = await response.text()
+        
+        // Extract title from HTML
+        const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i)
+        let pageTitle = titleMatch ? titleMatch[1].trim() : `Document from ${new URL(args.url).hostname}`
+        
+        // Decode HTML entities in title
+        pageTitle = pageTitle
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&#39;/g, "'")
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+          .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+        
+        // Remove HTML tags and extract text content
+        let cleanContent = html
+          .replace(/<script[^>]*>.*?<\/script>/gis, '') // Remove scripts
+          .replace(/<style[^>]*>.*?<\/style>/gis, '') // Remove styles
+          .replace(/<noscript[^>]*>.*?<\/noscript>/gis, '') // Remove noscript
+          .replace(/<!--.*?-->/gis, '') // Remove comments
+          .replace(/<[^>]*>/g, ' ') // Remove HTML tags
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&#39;/g, "'")
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+          .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+        
+        // Remove excessive whitespace and normalize
+        cleanContent = cleanContent
+          .replace(/\s+/g, ' ')
+          .replace(/\n\s*\n/g, '\n')
+          .trim()
 
-      return {
-        success: true,
-        title,
-        content,
-        documentId,
+        // Truncate if too long (max 50KB)
+        const maxContentLength = 50 * 1024
+        if (cleanContent.length > maxContentLength) {
+          cleanContent = cleanContent.substring(0, maxContentLength) + '\n... [Content truncated]'
+        }
+
+        // Validate we got meaningful content
+        if (!cleanContent || cleanContent.length < 50) {
+          throw new Error('Unable to extract meaningful content from the webpage')
+        }
+
+        // Update document with scraped content
+        await ctx.runMutation(api.documents.updateDocumentStatus, {
+          id: documentId,
+          processing_status: 'completed',
+        })
+
+        // Update the document with the actual content
+        await ctx.runMutation(api.documents.updateDocumentContent, {
+          id: documentId,
+          title: pageTitle,
+          content: cleanContent,
+        })
+
+        return {
+          success: true,
+          title: pageTitle,
+          content: cleanContent,
+          documentId,
+        }
+
+      } catch (scrapeError) {
+        // Provide more specific error messages
+        let errorMessage = 'Failed to scrape content from URL'
+        
+        if (scrapeError instanceof Error) {
+          if (scrapeError.name === 'AbortError' || scrapeError.message.includes('aborted')) {
+            errorMessage = 'Request timed out after 30 seconds'
+          } else if (scrapeError.message.includes('Failed to fetch') || scrapeError.message.includes('fetch')) {
+            errorMessage = 'Network error - unable to reach the URL'
+          } else {
+            errorMessage = scrapeError.message
+          }
+        }
+
+        // Update document status to failed
+        await ctx.runMutation(api.documents.updateDocumentStatus, {
+          id: documentId,
+          processing_status: 'failed',
+          error_message: errorMessage,
+        })
+
+        return {
+          success: false,
+          error: errorMessage,
+          title: '',
+          content: '',
+          documentId,
+        }
       }
+
     } catch (error) {
       console.error('URL scraping error:', error)
       return {
