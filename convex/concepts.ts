@@ -97,6 +97,329 @@ export const getRelationshipsByConcept = query({
   },
 })
 
+// Lock management mutations
+export const createDeduplicationLock = mutation({
+  args: {
+    operation_type: v.string(),
+    document_id: v.optional(v.id('documents')),
+  },
+  handler: async (ctx, args) => {
+    const processId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    return await ctx.db.insert('deduplication_locks', {
+      process_id: processId,
+      operation_type: args.operation_type,
+      status: 'active',
+      created_timestamp: Date.now(),
+      document_id: args.document_id,
+      concepts_processed: 0,
+    });
+  },
+});
+
+export const updateDeduplicationLock = mutation({
+  args: {
+    id: v.id('deduplication_locks'),
+    status: v.union(v.literal('active'), v.literal('completed'), v.literal('failed')),
+    error_message: v.optional(v.string()),
+    concepts_processed: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const { id, status, ...updates } = args;
+    
+    const updateData: any = {
+      status,
+      ...updates,
+    };
+    
+    if (status === 'completed' || status === 'failed') {
+      updateData.completed_timestamp = Date.now();
+    }
+    
+    return await ctx.db.patch(id, updateData);
+  },
+});
+
+export const getActiveLocks = query({
+  args: { operation_type: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    let query = ctx.db.query('deduplication_locks')
+      .withIndex('by_status', (q) => q.eq('status', 'active'));
+    
+    const locks = await query.collect();
+    
+    if (args.operation_type) {
+      return locks.filter(lock => lock.operation_type === args.operation_type);
+    }
+    
+    return locks;
+  },
+});
+
+export const cleanupOldLocks = mutation({
+  handler: async (ctx) => {
+    const cutoffTime = Date.now() - (30 * 60 * 1000); // 30 minutes ago
+    
+    const oldLocks = await ctx.db
+      .query('deduplication_locks')
+      .withIndex('by_created')
+      .filter((q) => q.lt(q.field('created_timestamp'), cutoffTime))
+      .collect();
+    
+    for (const lock of oldLocks) {
+      if (lock.status === 'active') {
+        await ctx.db.patch(lock._id, {
+          status: 'failed',
+          error_message: 'Lock timeout - process may have crashed',
+          completed_timestamp: Date.now(),
+        });
+      }
+    }
+    
+    return oldLocks.length;
+  },
+});
+
+export const deduplicateConcepts = action({
+  args: { 
+    documentId: v.optional(v.id('documents')),
+    threshold: v.optional(v.number()), // similarity threshold (0-1), default 0.8
+    maxConcepts: v.optional(v.number()), // processing limit, default 1000
+  },
+  handler: async (ctx, args) => {
+    const startTime = Date.now();
+    const threshold = args.threshold ?? 0.8;
+    const maxConcepts = args.maxConcepts ?? 1000;
+    let lockId: any = null;
+    
+    try {
+      // Step 1: Check for existing locks and create new lock
+      console.log('[DEDUP] Starting concept deduplication with enhanced safety measures...');
+      
+      // Clean up old locks first
+      await ctx.runMutation(api.concepts.cleanupOldLocks, {});
+      
+      // Check for active deduplication processes
+      const activeLocks = await ctx.runQuery(api.concepts.getActiveLocks, { 
+        operation_type: 'deduplication' 
+      });
+      
+      if (activeLocks.length > 0) {
+        console.log(`[DEDUP] Found ${activeLocks.length} active deduplication processes. Aborting.`);
+        return {
+          success: false,
+          error: `Deduplication already in progress (${activeLocks.length} active processes). Please wait for completion.`,
+          errorType: 'CONCURRENT_OPERATION',
+        };
+      }
+      
+      // Create lock
+      lockId = await ctx.runMutation(api.concepts.createDeduplicationLock, {
+        operation_type: 'deduplication',
+        document_id: args.documentId,
+      });
+      
+      console.log(`[DEDUP] Created lock ${lockId} for deduplication process`);
+      
+      // Step 2: Load concepts with limits
+      const allConcepts = args.documentId 
+        ? await ctx.runQuery(api.concepts.getConceptsByDocument, { documentId: args.documentId })
+        : await ctx.runQuery(api.concepts.getConcepts, {});
+
+      if (allConcepts.length > maxConcepts) {
+        console.log(`[DEDUP] Too many concepts (${allConcepts.length}). Processing first ${maxConcepts} by confidence score.`);
+      }
+      
+      // Sort by confidence and limit processing
+      const concepts = allConcepts
+        .sort((a, b) => b.confidence_score - a.confidence_score)
+        .slice(0, maxConcepts);
+      
+      console.log(`[DEDUP] Processing ${concepts.length} concepts (threshold: ${threshold})`);
+      
+      await ctx.runMutation(api.concepts.updateDeduplicationLock, {
+        id: lockId,
+        status: 'active',
+        concepts_processed: concepts.length,
+      });
+      
+      // Step 3: Find duplicates with batch processing
+      const BATCH_SIZE = 50;
+      const mergeOperations: Array<{
+        primary: any;
+        duplicates: any[];
+        similarity: number;
+      }> = [];
+      
+      const processedIds = new Set<string>();
+      
+      for (let batchStart = 0; batchStart < concepts.length; batchStart += BATCH_SIZE) {
+        const batchEnd = Math.min(batchStart + BATCH_SIZE, concepts.length);
+        console.log(`[DEDUP] Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}/${Math.ceil(concepts.length / BATCH_SIZE)}`);
+        
+        for (let i = batchStart; i < batchEnd; i++) {
+          const primary = concepts[i];
+          
+          if (processedIds.has(primary._id)) continue;
+          
+          const duplicates: any[] = [];
+          
+          for (let j = i + 1; j < concepts.length; j++) {
+            const candidate = concepts[j];
+            
+            if (processedIds.has(candidate._id)) continue;
+            
+            const similarity = calculateConceptSimilarity(primary, candidate);
+            
+            if (similarity >= threshold) {
+              duplicates.push(candidate);
+              processedIds.add(candidate._id);
+              console.log(`[DEDUP] Found duplicate: "${primary.name}" <-> "${candidate.name}" (${similarity.toFixed(2)})`);
+            }
+          }
+          
+          if (duplicates.length > 0) {
+            mergeOperations.push({
+              primary,
+              duplicates,
+              similarity: Math.max(...duplicates.map(d => calculateConceptSimilarity(primary, d)))
+            });
+            processedIds.add(primary._id);
+          }
+        }
+      }
+      
+      console.log(`[DEDUP] Found ${mergeOperations.length} merge operations`);
+      
+      // Step 4: Execute merge operations with safety checks and rollback
+      let mergedCount = 0;
+      let aliasesAdded = 0;
+      const failedMerges: string[] = [];
+      const successfulMerges: Array<{ primaryId: any; duplicateIds: any[] }> = [];
+      
+      for (const [index, operation] of mergeOperations.entries()) {
+        try {
+          console.log(`[DEDUP] Processing merge ${index + 1}/${mergeOperations.length}: "${operation.primary.name}"`);
+          
+          // Validate concepts still exist before merging
+          const primaryExists = await ctx.runQuery(api.concepts.getConcepts, {}).then(
+            concepts => concepts.some(c => c._id === operation.primary._id)
+          );
+          
+          if (!primaryExists) {
+            console.warn(`[DEDUP] Primary concept "${operation.primary.name}" no longer exists, skipping merge`);
+            continue;
+          }
+          
+          // Pre-merge relationship safety check
+          const duplicateIds = operation.duplicates.map(d => d._id);
+          const existingRelationships = await getExistingRelationshipsForMerge(ctx, operation.primary._id, duplicateIds);
+          
+          // Collect merged data
+          const allAliases = new Set([
+            ...operation.primary.aliases,
+            ...operation.duplicates.flatMap(d => [...d.aliases, d.name])
+          ]);
+          allAliases.delete(operation.primary.name); // Don't add primary name as alias
+          
+          const mergedDocumentIds = Array.from(new Set([
+            ...operation.primary.document_ids,
+            ...operation.duplicates.flatMap(d => d.document_ids)
+          ]));
+          
+          const totalConcepts = 1 + operation.duplicates.length;
+          const weightedConfidence = (
+            operation.primary.confidence_score +
+            operation.duplicates.reduce((sum, d) => sum + d.confidence_score, 0)
+          ) / totalConcepts;
+          
+          // Update primary concept
+          await ctx.runMutation(api.concepts.updateConcept, {
+            id: operation.primary._id,
+            aliases: Array.from(allAliases),
+            document_ids: mergedDocumentIds,
+            confidence_score: Math.min(1, weightedConfidence * 1.1),
+            description: operation.primary.description
+          });
+          
+          // Safely merge relationships
+          await mergeRelationshipsWithSafetyChecks(ctx, operation.primary._id, duplicateIds, existingRelationships);
+          
+          // Delete duplicate concepts
+          for (const duplicate of operation.duplicates) {
+            await ctx.runMutation(api.concepts.deleteConcept, {
+              id: duplicate._id
+            });
+          }
+          
+          successfulMerges.push({
+            primaryId: operation.primary._id,
+            duplicateIds
+          });
+          
+          mergedCount += operation.duplicates.length;
+          aliasesAdded += Array.from(allAliases).length - operation.primary.aliases.length;
+          
+          console.log(`[DEDUP] Successfully merged ${operation.duplicates.length} concepts into "${operation.primary.name}"`);
+          
+        } catch (error) {
+          const errorMsg = `Failed to merge "${operation.primary.name}": ${error instanceof Error ? error.message : 'Unknown error'}`;
+          console.error(`[DEDUP] ${errorMsg}`);
+          failedMerges.push(errorMsg);
+        }
+      }
+      
+      // Step 5: Complete lock and return results
+      await ctx.runMutation(api.concepts.updateDeduplicationLock, {
+        id: lockId,
+        status: 'completed',
+        concepts_processed: concepts.length,
+      });
+      
+      const duration = Date.now() - startTime;
+      
+      console.log(`[DEDUP] Deduplication completed in ${duration}ms: ${mergedCount} concepts merged, ${aliasesAdded} aliases added`);
+      
+      if (failedMerges.length > 0) {
+        console.warn(`[DEDUP] ${failedMerges.length} merges failed:`, failedMerges);
+      }
+      
+      return {
+        success: true,
+        mergedCount,
+        aliasesAdded,
+        totalOperations: mergeOperations.length,
+        failedMerges: failedMerges.length,
+        processingTime: duration,
+        conceptsProcessed: concepts.length,
+        warning: failedMerges.length > 0 ? `${failedMerges.length} merge operations failed` : undefined,
+      };
+      
+    } catch (error) {
+      console.error('[DEDUP] Critical deduplication error:', error);
+      
+      // Update lock with failure
+      if (lockId) {
+        try {
+          await ctx.runMutation(api.concepts.updateDeduplicationLock, {
+            id: lockId,
+            status: 'failed',
+            error_message: error instanceof Error ? error.message : 'Unknown error',
+          });
+        } catch (lockError) {
+          console.error('[DEDUP] Failed to update lock status:', lockError);
+        }
+      }
+      
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown deduplication error',
+        errorType: 'CRITICAL_ERROR',
+      };
+    }
+  },
+})
+
 export const processDocument = action({
   args: { documentId: v.id('documents') },
   handler: async (ctx, args) => {
@@ -223,10 +546,24 @@ export const processDocument = action({
         console.warn(`Failed to create ${failedRelationships.length} relationships:`, failedRelationships);
       }
 
+      // Automatically run deduplication after document processing
+      console.log('Running automatic concept deduplication...');
+      const deduplicationResult = await ctx.runAction(api.concepts.deduplicateConcepts, {
+        documentId: args.documentId,
+        threshold: 0.8
+      });
+      
+      if (deduplicationResult.success) {
+        console.log(`Deduplication: ${deduplicationResult.mergedCount} concepts merged, ${deduplicationResult.aliasesAdded} aliases added`);
+      } else {
+        console.warn('Deduplication failed:', deduplicationResult.error);
+      }
+
       return {
         success: true,
         conceptsCount: conceptsCreated,
         relationshipsCount: relationshipsCreated,
+        deduplicationResult,
         warning: failedConcepts.length > 0 || failedRelationships.length > 0 
           ? `Some items failed to create: ${failedConcepts.length} concepts, ${failedRelationships.length} relationships`
           : undefined,
@@ -494,3 +831,142 @@ Return only valid JSON, no additional text.`;
     errorType: ProcessingErrorType.API_EXTRACTION_FAILED,
   };
 }
+
+// Helper functions for concept deduplication
+
+function calculateConceptSimilarity(concept1: any, concept2: any): number {
+  // Name similarity (Levenshtein distance normalized)
+  const nameSimilarity = calculateStringSimilarity(concept1.name, concept2.name);
+  
+  // Description similarity (simple word overlap)
+  const descriptionSimilarity = calculateStringSimilarity(concept1.description, concept2.description);
+  
+  // Alias overlap check
+  const aliases1 = new Set([concept1.name, ...concept1.aliases]);
+  const aliases2 = new Set([concept2.name, ...concept2.aliases]);
+  const aliasOverlap = calculateSetOverlap(aliases1, aliases2);
+  
+  // Category match bonus
+  const categoryBonus = concept1.category && concept2.category && concept1.category === concept2.category ? 0.1 : 0;
+  
+  // Weighted combination
+  return Math.min(1, (nameSimilarity * 0.5 + descriptionSimilarity * 0.3 + aliasOverlap * 0.2 + categoryBonus));
+}
+
+function calculateStringSimilarity(str1: string, str2: string): number {
+  if (str1 === str2) return 1.0;
+  
+  const longer = str1.length > str2.length ? str1 : str2;
+  const shorter = str1.length > str2.length ? str2 : str1;
+  
+  if (longer.length === 0) return 1.0;
+  
+  const distance = levenshteinDistance(longer.toLowerCase(), shorter.toLowerCase());
+  return (longer.length - distance) / longer.length;
+}
+
+function levenshteinDistance(str1: string, str2: string): number {
+  const matrix = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(null));
+  
+  for (let i = 0; i <= str1.length; i++) matrix[0][i] = i;
+  for (let j = 0; j <= str2.length; j++) matrix[j][0] = j;
+  
+  for (let j = 1; j <= str2.length; j++) {
+    for (let i = 1; i <= str1.length; i++) {
+      const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
+      matrix[j][i] = Math.min(
+        matrix[j][i - 1] + 1, // deletion
+        matrix[j - 1][i] + 1, // insertion
+        matrix[j - 1][i - 1] + indicator // substitution
+      );
+    }
+  }
+  
+  return matrix[str2.length][str1.length];
+}
+
+function calculateSetOverlap(set1: Set<string>, set2: Set<string>): number {
+  const intersection = new Set([...set1].filter(x => set2.has(x)));
+  const union = new Set([...set1, ...set2]);
+  return union.size > 0 ? intersection.size / union.size : 0;
+}
+
+// Enhanced relationship safety functions
+async function getExistingRelationshipsForMerge(ctx: any, primaryId: any, duplicateIds: any[]) {
+  const allIds = [primaryId, ...duplicateIds];
+  const existingRelationships = new Map<string, any>();
+  
+  for (const conceptId of allIds) {
+    const relationships = await ctx.runQuery(api.concepts.getRelationshipsByConcept, { 
+      conceptId 
+    });
+    
+    for (const rel of relationships) {
+      const key = `${rel.source_concept_id}-${rel.target_concept_id}-${rel.relationship_type}`;
+      if (!existingRelationships.has(key)) {
+        existingRelationships.set(key, rel);
+      }
+    }
+  }\n  \n  return existingRelationships;\n}\n\nasync function mergeRelationshipsWithSafetyChecks(ctx: any, primaryId: any, duplicateIds: any[], existingRelationships: Map<string, any>) {\n  console.log(`[DEDUP] Merging relationships for ${duplicateIds.length} duplicate concepts`);\n  \n  const processedRelationships = new Set<string>();\n  const duplicateRelationships: any[] = [];\n  \n  // Collect all relationships from duplicates\n  for (const duplicateId of duplicateIds) {\n    const relationships = await ctx.runQuery(api.concepts.getRelationshipsByConcept, { \n      conceptId: duplicateId \n    });\n    \n    for (const rel of relationships) {\n      // Determine new source and target after merge\n      const newSourceId = rel.source_concept_id === duplicateId ? primaryId : \n                         duplicateIds.includes(rel.source_concept_id) ? primaryId : rel.source_concept_id;\n      const newTargetId = rel.target_concept_id === duplicateId ? primaryId : \n                         duplicateIds.includes(rel.target_concept_id) ? primaryId : rel.target_concept_id;\n      \n      // Skip self-relationships\n      if (newSourceId === newTargetId) {\n        console.log(`[DEDUP] Skipping self-relationship: ${rel.relationship_type}`);\n        duplicateRelationships.push(rel._id);\n        continue;\n      }\n      \n      // Check for existing relationship with same source, target, and type\n      const relationshipKey = `${newSourceId}-${newTargetId}-${rel.relationship_type}`;\n      const reverseKey = `${newTargetId}-${newSourceId}-${rel.relationship_type}`;\n      \n      if (processedRelationships.has(relationshipKey) || processedRelationships.has(reverseKey)) {\n        console.log(`[DEDUP] Duplicate relationship found: ${rel.relationship_type}`);\n        duplicateRelationships.push(rel._id);\n        continue;\n      }\n      \n      // Check if this would create a duplicate relationship\n      const existingRel = existingRelationships.get(relationshipKey) || existingRelationships.get(reverseKey);\n      \n      if (existingRel && existingRel._id !== rel._id) {\n        console.log(`[DEDUP] Merging duplicate relationship: ${rel.relationship_type}`);\n        \n        // Keep the relationship with higher strength\n        if (rel.strength > existingRel.strength) {\n          await ctx.runMutation(api.concepts.updateRelationship, {\n            id: existingRel._id,\n            source_concept_id: newSourceId,\n            target_concept_id: newTargetId,\n          });\n          \n          // Update the strength and context if this one is stronger\n          await ctx.runMutation(api.concepts.updateRelationshipStrength, {\n            id: existingRel._id,\n            strength: rel.strength,\n            context: `${existingRel.context}; ${rel.context}`.trim(),\n          });\n        }\n        \n        duplicateRelationships.push(rel._id);\n      } else {\n        // Update relationship to point to primary concept\n        await ctx.runMutation(api.concepts.updateRelationship, {\n          id: rel._id,\n          source_concept_id: newSourceId,\n          target_concept_id: newTargetId,\n        });\n        \n        processedRelationships.add(relationshipKey);\n      }\n    }\n  }\n  \n  // Clean up duplicate relationships\n  for (const relId of duplicateRelationships) {\n    try {\n      await ctx.runMutation(api.concepts.deleteRelationship, { id: relId });\n    } catch (error) {\n      console.warn(`[DEDUP] Failed to delete duplicate relationship ${relId}:`, error);\n    }\n  }\n  \n  console.log(`[DEDUP] Processed ${processedRelationships.size} unique relationships, removed ${duplicateRelationships.length} duplicates`);\n}
+
+// Additional mutations needed for deduplication
+
+export const updateConcept = mutation({
+  args: {
+    id: v.id('concepts'),
+    aliases: v.optional(v.array(v.string())),
+    document_ids: v.optional(v.array(v.id('documents'))),
+    confidence_score: v.optional(v.number()),
+    description: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...updates } = args;
+    const filteredUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([, value]) => value !== undefined)
+    );
+    
+    return await ctx.db.patch(id, filteredUpdates);
+  },
+});
+
+export const deleteConcept = mutation({
+  args: { id: v.id('concepts') },
+  handler: async (ctx, args) => {
+    return await ctx.db.delete(args.id);
+  },
+});
+
+export const updateRelationship = mutation({
+  args: {
+    id: v.id('relationships'),
+    source_concept_id: v.optional(v.id('concepts')),
+    target_concept_id: v.optional(v.id('concepts')),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...updates } = args;
+    const filteredUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([, value]) => value !== undefined)
+    );
+    
+    return await ctx.db.patch(id, filteredUpdates);
+  },
+});
+
+export const updateRelationshipStrength = mutation({
+  args: {
+    id: v.id('relationships'),
+    strength: v.number(),
+    context: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...updates } = args;
+    return await ctx.db.patch(id, updates);
+  },
+});
+
+export const deleteRelationship = mutation({
+  args: { id: v.id('relationships') },
+  handler: async (ctx, args) => {
+    return await ctx.db.delete(args.id);
+  },
+});

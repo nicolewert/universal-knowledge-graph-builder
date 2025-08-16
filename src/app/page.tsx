@@ -5,6 +5,7 @@ import { TaskList } from "@/components/TaskList"
 import { DocumentUpload } from "@/components/DocumentUpload"
 import { UrlInput } from "@/components/UrlInput"
 import { DocumentList } from "@/components/DocumentList"
+import { ConceptManagement } from "@/components/ConceptManagement"
 
 export default function Home() {
   return (
@@ -121,6 +122,11 @@ export default function Home() {
               </Card>
             </div>
           </div>
+        </div>
+
+        <div className="mb-16">
+          <h2 className="text-2xl font-semibold text-center mb-8">Concept Management</h2>
+          <ConceptManagement />
         </div>
 
         <div className="text-center space-y-4">

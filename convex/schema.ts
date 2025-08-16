@@ -65,5 +65,19 @@ export default defineSchema({
   }).index('by_source', ['source_concept_id'])
     .index('by_target', ['target_concept_id'])
     .index('by_document', ['document_id'])
-    .index('by_strength', ['strength']),
+    .index('by_strength', ['strength'])
+    .index('by_source_target', ['source_concept_id', 'target_concept_id']),
+
+  deduplication_locks: defineTable({
+    process_id: v.string(),
+    operation_type: v.string(), // 'deduplication' | 'merge'
+    status: v.union(v.literal('active'), v.literal('completed'), v.literal('failed')),
+    created_timestamp: v.number(),
+    completed_timestamp: v.optional(v.number()),
+    document_id: v.optional(v.id('documents')), // For document-specific locks
+    error_message: v.optional(v.string()),
+    concepts_processed: v.optional(v.number()),
+  }).index('by_status', ['status'])
+    .index('by_operation', ['operation_type', 'status'])
+    .index('by_created', ['created_timestamp']),
 })
