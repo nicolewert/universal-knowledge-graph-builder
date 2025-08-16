@@ -2,6 +2,9 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { TaskList } from "@/components/TaskList"
+import { DocumentUpload } from "@/components/DocumentUpload"
+import { UrlInput } from "@/components/UrlInput"
+import { DocumentList } from "@/components/DocumentList"
 
 export default function Home() {
   return (
@@ -75,6 +78,49 @@ export default function Home() {
         <div className="mb-16">
           <h2 className="text-2xl font-semibold text-center mb-8">Try the Convex Integration</h2>
           <TaskList />
+        </div>
+
+        <div className="mb-16 space-y-8">
+          <h2 className="text-2xl font-semibold text-center mb-8">Document Upload & Storage System</h2>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Upload Documents</CardTitle>
+                  <CardDescription>
+                    Upload text files or import content from URLs
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <DocumentUpload />
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <span className="w-full border-t" />
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase">
+                      <span className="bg-background px-2 text-muted-foreground">Or</span>
+                    </div>
+                  </div>
+                  <UrlInput />
+                </CardContent>
+              </Card>
+            </div>
+            
+            <div>
+              <Card className="h-fit">
+                <CardHeader>
+                  <CardTitle>Your Documents</CardTitle>
+                  <CardDescription>
+                    Real-time view of uploaded and processed documents
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <DocumentList />
+                </CardContent>
+              </Card>
+            </div>
+          </div>
         </div>
 
         <div className="text-center space-y-4">
