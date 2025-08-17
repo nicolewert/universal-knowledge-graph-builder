@@ -907,7 +907,94 @@ async function getExistingRelationshipsForMerge(ctx: any, primaryId: any, duplic
         existingRelationships.set(key, rel);
       }
     }
-  }\n  \n  return existingRelationships;\n}\n\nasync function mergeRelationshipsWithSafetyChecks(ctx: any, primaryId: any, duplicateIds: any[], existingRelationships: Map<string, any>) {\n  console.log(`[DEDUP] Merging relationships for ${duplicateIds.length} duplicate concepts`);\n  \n  const processedRelationships = new Set<string>();\n  const duplicateRelationships: any[] = [];\n  \n  // Collect all relationships from duplicates\n  for (const duplicateId of duplicateIds) {\n    const relationships = await ctx.runQuery(api.concepts.getRelationshipsByConcept, { \n      conceptId: duplicateId \n    });\n    \n    for (const rel of relationships) {\n      // Determine new source and target after merge\n      const newSourceId = rel.source_concept_id === duplicateId ? primaryId : \n                         duplicateIds.includes(rel.source_concept_id) ? primaryId : rel.source_concept_id;\n      const newTargetId = rel.target_concept_id === duplicateId ? primaryId : \n                         duplicateIds.includes(rel.target_concept_id) ? primaryId : rel.target_concept_id;\n      \n      // Skip self-relationships\n      if (newSourceId === newTargetId) {\n        console.log(`[DEDUP] Skipping self-relationship: ${rel.relationship_type}`);\n        duplicateRelationships.push(rel._id);\n        continue;\n      }\n      \n      // Check for existing relationship with same source, target, and type\n      const relationshipKey = `${newSourceId}-${newTargetId}-${rel.relationship_type}`;\n      const reverseKey = `${newTargetId}-${newSourceId}-${rel.relationship_type}`;\n      \n      if (processedRelationships.has(relationshipKey) || processedRelationships.has(reverseKey)) {\n        console.log(`[DEDUP] Duplicate relationship found: ${rel.relationship_type}`);\n        duplicateRelationships.push(rel._id);\n        continue;\n      }\n      \n      // Check if this would create a duplicate relationship\n      const existingRel = existingRelationships.get(relationshipKey) || existingRelationships.get(reverseKey);\n      \n      if (existingRel && existingRel._id !== rel._id) {\n        console.log(`[DEDUP] Merging duplicate relationship: ${rel.relationship_type}`);\n        \n        // Keep the relationship with higher strength\n        if (rel.strength > existingRel.strength) {\n          await ctx.runMutation(api.concepts.updateRelationship, {\n            id: existingRel._id,\n            source_concept_id: newSourceId,\n            target_concept_id: newTargetId,\n          });\n          \n          // Update the strength and context if this one is stronger\n          await ctx.runMutation(api.concepts.updateRelationshipStrength, {\n            id: existingRel._id,\n            strength: rel.strength,\n            context: `${existingRel.context}; ${rel.context}`.trim(),\n          });\n        }\n        \n        duplicateRelationships.push(rel._id);\n      } else {\n        // Update relationship to point to primary concept\n        await ctx.runMutation(api.concepts.updateRelationship, {\n          id: rel._id,\n          source_concept_id: newSourceId,\n          target_concept_id: newTargetId,\n        });\n        \n        processedRelationships.add(relationshipKey);\n      }\n    }\n  }\n  \n  // Clean up duplicate relationships\n  for (const relId of duplicateRelationships) {\n    try {\n      await ctx.runMutation(api.concepts.deleteRelationship, { id: relId });\n    } catch (error) {\n      console.warn(`[DEDUP] Failed to delete duplicate relationship ${relId}:`, error);\n    }\n  }\n  \n  console.log(`[DEDUP] Processed ${processedRelationships.size} unique relationships, removed ${duplicateRelationships.length} duplicates`);\n}
+  }
+  
+  return existingRelationships;
+}
+
+async function mergeRelationshipsWithSafetyChecks(ctx: any, primaryId: any, duplicateIds: any[], existingRelationships: Map<string, any>) {
+  console.log(`[DEDUP] Merging relationships for ${duplicateIds.length} duplicate concepts`);
+  
+  const processedRelationships = new Set<string>();
+  const duplicateRelationships: any[] = [];
+  
+  // Collect all relationships from duplicates
+  for (const duplicateId of duplicateIds) {
+    const relationships = await ctx.runQuery(api.concepts.getRelationshipsByConcept, { 
+      conceptId: duplicateId 
+    });
+    
+    for (const rel of relationships) {
+      // Determine new source and target after merge
+      const newSourceId = rel.source_concept_id === duplicateId ? primaryId : 
+                         duplicateIds.includes(rel.source_concept_id) ? primaryId : rel.source_concept_id;
+      const newTargetId = rel.target_concept_id === duplicateId ? primaryId : 
+                         duplicateIds.includes(rel.target_concept_id) ? primaryId : rel.target_concept_id;
+      
+      // Skip self-relationships
+      if (newSourceId === newTargetId) {
+        console.log(`[DEDUP] Skipping self-relationship: ${rel.relationship_type}`);
+        duplicateRelationships.push(rel._id);
+        continue;
+      }
+      
+      // Check for existing relationship with same source, target, and type
+      const relationshipKey = `${newSourceId}-${newTargetId}-${rel.relationship_type}`;
+      const reverseKey = `${newTargetId}-${newSourceId}-${rel.relationship_type}`;
+      
+      if (processedRelationships.has(relationshipKey) || processedRelationships.has(reverseKey)) {
+        console.log(`[DEDUP] Duplicate relationship found: ${rel.relationship_type}`);
+        duplicateRelationships.push(rel._id);
+        continue;
+      }
+      
+      // Check if this would create a duplicate relationship
+      const existingRel = existingRelationships.get(relationshipKey) || existingRelationships.get(reverseKey);
+      
+      if (existingRel && existingRel._id !== rel._id) {
+        console.log(`[DEDUP] Merging duplicate relationship: ${rel.relationship_type}`);
+        
+        // Keep the relationship with higher strength
+        if (rel.strength > existingRel.strength) {
+          await ctx.runMutation(api.concepts.updateRelationship, {
+            id: existingRel._id,
+            source_concept_id: newSourceId,
+            target_concept_id: newTargetId,
+          });
+          
+          // Update the strength and context if this one is stronger
+          await ctx.runMutation(api.concepts.updateRelationshipStrength, {
+            id: existingRel._id,
+            strength: rel.strength,
+            context: `${existingRel.context}; ${rel.context}`.trim(),
+          });
+        }
+        
+        duplicateRelationships.push(rel._id);
+      } else {
+        // Update relationship to point to primary concept
+        await ctx.runMutation(api.concepts.updateRelationship, {
+          id: rel._id,
+          source_concept_id: newSourceId,
+          target_concept_id: newTargetId,
+        });
+        
+        processedRelationships.add(relationshipKey);
+      }
+    }
+  }
+  
+  // Clean up duplicate relationships
+  for (const relId of duplicateRelationships) {
+    try {
+      await ctx.runMutation(api.concepts.deleteRelationship, { id: relId });
+    } catch (error) {
+      console.warn(`[DEDUP] Failed to delete duplicate relationship ${relId}:`, error);
+    }
+  }
+  
+  console.log(`[DEDUP] Processed ${processedRelationships.size} unique relationships, removed ${duplicateRelationships.length} duplicates`);
+}
 
 // Additional mutations needed for deduplication
 
@@ -968,5 +1055,74 @@ export const deleteRelationship = mutation({
   args: { id: v.id('relationships') },
   handler: async (ctx, args) => {
     return await ctx.db.delete(args.id);
+  },
+});
+
+// Graph visualization queries
+
+export const getGraphData = query({
+  handler: async (ctx) => {
+    // Get all concepts
+    const concepts = await ctx.db.query('concepts').collect();
+    
+    // Get all relationships
+    const relationships = await ctx.db.query('relationships').collect();
+    
+    // Transform concepts to nodes
+    const nodes = concepts.map(concept => ({
+      id: concept._id,
+      name: concept.name,
+      category: concept.category || 'default',
+      size: concept.document_ids.length || 1,
+      description: concept.description,
+      confidence: concept.confidence_score,
+    }));
+    
+    // Transform relationships to edges
+    const edges = relationships.map(rel => ({
+      source: rel.source_concept_id,
+      target: rel.target_concept_id,
+      strength: rel.strength,
+      type: rel.relationship_type,
+      context: rel.context,
+    }));
+    
+    return { nodes, edges };
+  },
+});
+
+export const getConcept = query({
+  args: { conceptId: v.id('concepts') },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.conceptId);
+  },
+});
+
+export const getConceptRelationships = query({
+  args: { conceptId: v.id('concepts') },
+  handler: async (ctx, args) => {
+    const relationships = await ctx.runQuery(api.concepts.getRelationshipsByConcept, {
+      conceptId: args.conceptId,
+    });
+    
+    // Get related concept details
+    const relatedConceptIds = new Set<string>();
+    relationships.forEach(rel => {
+      if (rel.source_concept_id !== args.conceptId) {
+        relatedConceptIds.add(rel.source_concept_id);
+      }
+      if (rel.target_concept_id !== args.conceptId) {
+        relatedConceptIds.add(rel.target_concept_id);
+      }
+    });
+    
+    const relatedConcepts = await Promise.all(
+      Array.from(relatedConceptIds).map(id => ctx.db.get(id as any))
+    );
+    
+    return {
+      relationships,
+      relatedConcepts: relatedConcepts.filter(Boolean),
+    };
   },
 });
