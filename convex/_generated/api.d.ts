@@ -17,6 +17,7 @@ import type * as concepts from "../concepts.js";
 import type * as documents from "../documents.js";
 import type * as graph from "../graph.js";
 import type * as notes from "../notes.js";
+import type * as relationships from "../relationships.js";
 import type * as tasks from "../tasks.js";
 import type * as users from "../users.js";
 
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   documents: typeof documents;
   graph: typeof graph;
   notes: typeof notes;
+  relationships: typeof relationships;
   tasks: typeof tasks;
   users: typeof users;
 }>;

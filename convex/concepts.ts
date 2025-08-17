@@ -186,7 +186,7 @@ export const deduplicateConcepts = action({
     threshold: v.optional(v.number()), // similarity threshold (0-1), default 0.8
     maxConcepts: v.optional(v.number()), // processing limit, default 1000
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<any> => {
     const startTime = Date.now();
     const threshold = args.threshold ?? 0.8;
     const maxConcepts = args.maxConcepts ?? 1000;
@@ -200,7 +200,7 @@ export const deduplicateConcepts = action({
       await ctx.runMutation(api.concepts.cleanupOldLocks, {});
       
       // Check for active deduplication processes
-      const activeLocks = await ctx.runQuery(api.concepts.getActiveLocks, { 
+      const activeLocks: any = await ctx.runQuery(api.concepts.getActiveLocks, { 
         operation_type: 'deduplication' 
       });
       
@@ -222,7 +222,7 @@ export const deduplicateConcepts = action({
       console.log(`[DEDUP] Created lock ${lockId} for deduplication process`);
       
       // Step 2: Load concepts with limits
-      const allConcepts = args.documentId 
+      const allConcepts: any = args.documentId 
         ? await ctx.runQuery(api.concepts.getConceptsByDocument, { documentId: args.documentId })
         : await ctx.runQuery(api.concepts.getConcepts, {});
 
@@ -231,8 +231,8 @@ export const deduplicateConcepts = action({
       }
       
       // Sort by confidence and limit processing
-      const concepts = allConcepts
-        .sort((a, b) => b.confidence_score - a.confidence_score)
+      const concepts: any = allConcepts
+        .sort((a: any, b: any) => b.confidence_score - a.confidence_score)
         .slice(0, maxConcepts);
       
       console.log(`[DEDUP] Processing ${concepts.length} concepts (threshold: ${threshold})`);
@@ -303,7 +303,7 @@ export const deduplicateConcepts = action({
           
           // Validate concepts still exist before merging
           const primaryExists = await ctx.runQuery(api.concepts.getConcepts, {}).then(
-            concepts => concepts.some(c => c._id === operation.primary._id)
+            (concepts: any) => concepts.some((c: any) => c._id === operation.primary._id)
           );
           
           if (!primaryExists) {
@@ -422,7 +422,7 @@ export const deduplicateConcepts = action({
 
 export const processDocument = action({
   args: { documentId: v.id('documents') },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<any> => {
     let conceptsCreated = 0;
     let relationshipsCreated = 0;
     
@@ -548,7 +548,7 @@ export const processDocument = action({
 
       // Automatically run deduplication after document processing
       console.log('Running automatic concept deduplication...');
-      const deduplicationResult = await ctx.runAction(api.concepts.deduplicateConcepts, {
+      const deduplicationResult: any = await ctx.runAction(api.concepts.deduplicateConcepts, {
         documentId: args.documentId,
         threshold: 0.8
       });
@@ -1061,12 +1061,47 @@ export const deleteRelationship = mutation({
 // Graph visualization queries
 
 export const getGraphData = query({
-  handler: async (ctx) => {
+  args: {
+    categories: v.optional(v.array(v.string())),
+    relationshipTypes: v.optional(v.array(v.string())),
+    searchQuery: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
     // Get all concepts
-    const concepts = await ctx.db.query('concepts').collect();
+    let concepts = await ctx.db.query('concepts').collect();
     
-    // Get all relationships
-    const relationships = await ctx.db.query('relationships').collect();
+    // Apply search filter
+    if (args.searchQuery && args.searchQuery.trim()) {
+      const searchTerm = args.searchQuery.toLowerCase().trim();
+      concepts = concepts.filter(concept => 
+        concept.name.toLowerCase().includes(searchTerm) ||
+        concept.description.toLowerCase().includes(searchTerm) ||
+        concept.aliases.some(alias => alias.toLowerCase().includes(searchTerm))
+      );
+    }
+    
+    // Apply category filter
+    if (args.categories && args.categories.length > 0) {
+      concepts = concepts.filter(concept => 
+        args.categories!.includes(concept.category || 'default')
+      );
+    }
+    
+    // Get concept IDs for relationship filtering
+    const conceptIds = new Set(concepts.map(c => c._id));
+    
+    // Get relationships, filtered by concept availability
+    let relationships = await ctx.db.query('relationships').collect();
+    relationships = relationships.filter(rel => 
+      conceptIds.has(rel.source_concept_id) && conceptIds.has(rel.target_concept_id)
+    );
+    
+    // Apply relationship type filter
+    if (args.relationshipTypes && args.relationshipTypes.length > 0) {
+      relationships = relationships.filter(rel => 
+        args.relationshipTypes!.includes(rel.relationship_type)
+      );
+    }
     
     // Transform concepts to nodes
     const nodes = concepts.map(concept => ({
@@ -1100,14 +1135,14 @@ export const getConcept = query({
 
 export const getConceptRelationships = query({
   args: { conceptId: v.id('concepts') },
-  handler: async (ctx, args) => {
-    const relationships = await ctx.runQuery(api.concepts.getRelationshipsByConcept, {
+  handler: async (ctx, args): Promise<any> => {
+    const relationships: any = await ctx.runQuery(api.concepts.getRelationshipsByConcept, {
       conceptId: args.conceptId,
     });
     
     // Get related concept details
     const relatedConceptIds = new Set<string>();
-    relationships.forEach(rel => {
+    relationships.forEach((rel: any) => {
       if (rel.source_concept_id !== args.conceptId) {
         relatedConceptIds.add(rel.source_concept_id);
       }
@@ -1123,6 +1158,117 @@ export const getConceptRelationships = query({
     return {
       relationships,
       relatedConcepts: relatedConcepts.filter(Boolean),
+    };
+  },
+});
+
+// Search and filter helper queries
+
+export const searchConcepts = query({
+  args: { 
+    searchTerm: v.string(),
+    limit: v.optional(v.number())
+  },
+  handler: async (ctx, args) => {
+    if (!args.searchTerm.trim()) {
+      return [];
+    }
+    
+    const searchTerm = args.searchTerm.toLowerCase().trim();
+    const concepts = await ctx.db.query('concepts').collect();
+    const limit = args.limit || 10;
+    
+    return concepts
+      .filter(concept => 
+        concept.name.toLowerCase().includes(searchTerm) ||
+        concept.description.toLowerCase().includes(searchTerm) ||
+        concept.aliases.some(alias => alias.toLowerCase().includes(searchTerm))
+      )
+      .slice(0, limit)
+      .map(concept => ({
+        id: concept._id,
+        name: concept.name,
+        category: concept.category || 'default',
+        description: concept.description,
+        score: 1.0 // Simple score, could be enhanced
+      }));
+  },
+});
+
+export const getCategories = query({
+  handler: async (ctx) => {
+    const concepts = await ctx.db.query('concepts').collect();
+    const categories = new Set<string>();
+    
+    concepts.forEach(concept => {
+      categories.add(concept.category || 'default');
+    });
+    
+    return Array.from(categories).sort();
+  },
+});
+
+export const getAvailableCategories = query({
+  handler: async (ctx) => {
+    const concepts = await ctx.db.query('concepts').collect();
+    const categories = new Set<string>();
+    
+    concepts.forEach(concept => {
+      categories.add(concept.category || 'default');
+    });
+    
+    return Array.from(categories).sort();
+  },
+});
+
+// Add missing relationships query for graph filters
+export const getRelationshipTypes = query({
+  handler: async (ctx) => {
+    const relationships = await ctx.db.query('relationships').collect();
+    const types = new Set<string>();
+    
+    relationships.forEach(rel => {
+      types.add(rel.relationship_type);
+    });
+    
+    return Array.from(types).sort();
+  },
+});
+
+export const getAvailableRelationshipTypes = query({
+  handler: async (ctx) => {
+    const relationships = await ctx.db.query('relationships').collect();
+    const types = new Set<string>();
+    
+    relationships.forEach(rel => {
+      types.add(rel.relationship_type);
+    });
+    
+    return Array.from(types).sort();
+  },
+});
+
+export const getGraphStats = query({
+  handler: async (ctx) => {
+    const concepts = await ctx.db.query('concepts').collect();
+    const relationships = await ctx.db.query('relationships').collect();
+    
+    const categories = new Set<string>();
+    const relationshipTypes = new Set<string>();
+    
+    concepts.forEach(concept => {
+      categories.add(concept.category || 'default');
+    });
+    
+    relationships.forEach(rel => {
+      relationshipTypes.add(rel.relationship_type);
+    });
+    
+    return {
+      totalNodes: concepts.length,
+      totalEdges: relationships.length,
+      categories: Array.from(categories),
+      relationshipTypes: Array.from(relationshipTypes),
     };
   },
 });

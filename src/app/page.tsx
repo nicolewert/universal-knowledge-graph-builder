@@ -5,7 +5,7 @@ import { TaskList } from "@/components/TaskList"
 import { DocumentUpload } from "@/components/DocumentUpload"
 import { UrlInput } from "@/components/UrlInput"
 import { DocumentList } from "@/components/DocumentList"
-import { ConceptManagement } from "@/components/ConceptManagement"
+import TestDataSeeder from "@/components/TestDataSeeder"
 
 export default function Home() {
   return (
@@ -125,8 +125,13 @@ export default function Home() {
         </div>
 
         <div className="mb-16">
-          <h2 className="text-2xl font-semibold text-center mb-8">Concept Management</h2>
-          <ConceptManagement />
+          <h2 className="text-2xl font-semibold text-center mb-8">Graph Testing</h2>
+          <TestDataSeeder />
+          <div className="text-center mt-4">
+            <Button asChild variant="outline">
+              <a href="/graph">View Knowledge Graph</a>
+            </Button>
+          </div>
         </div>
 
         <div className="text-center space-y-4">

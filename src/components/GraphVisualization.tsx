@@ -53,20 +53,22 @@ interface GraphVisualizationProps {
   edges: GraphEdge[];
   onNodeClick?: (node: GraphNode) => void;
   filters?: GraphFilters;
+  layoutType?: 'force-directed' | 'hierarchical' | 'circular' | 'radial';
   width?: number;
   height?: number;
   className?: string;
 }
 
-export const GraphVisualization: React.FC<GraphVisualizationProps> = ({
+export const GraphVisualization = React.forwardRef<any, GraphVisualizationProps>(({
   nodes,
   edges,
   onNodeClick,
   filters,
+  layoutType = 'force-directed',
   width = 800,
   height = 600,
   className = ''
-}) => {
+}, ref) => {
   // Refs for SVG and simulation
   const svgRef = useRef<SVGSVGElement | null>(null);
   const simulationRef = useRef<d3.Simulation<GraphNode, GraphEdge> | null>(null);
@@ -136,16 +138,60 @@ export const GraphVisualization: React.FC<GraphVisualizationProps> = ({
       .domain([0, d3.max(graphData.nodes, d => d.size) || 1])
       .range([5 * baseSizeMultiplier, 25 * baseSizeMultiplier]);
 
-    // Create force simulation
-    const simulation = d3.forceSimulation<GraphNode, GraphEdge>(graphData.nodes)
-      .force('link', d3.forceLink<GraphNode, GraphEdge>(graphData.edges)
-        .id(d => d.id)
-        .distance(100)
-      )
-      .force('charge', d3.forceManyBody().strength(-200))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(d => nodeScale(d.size) + 10))
-      .on('tick', ticked);
+    // Create force simulation based on layout type
+    let simulation: d3.Simulation<GraphNode, GraphEdge>;
+    
+    switch (layoutType) {
+      case 'hierarchical':
+        simulation = d3.forceSimulation<GraphNode, GraphEdge>(graphData.nodes)
+          .force('link', d3.forceLink<GraphNode, GraphEdge>(graphData.edges)
+            .id(d => d.id)
+            .distance(150)
+          )
+          .force('charge', d3.forceManyBody().strength(-300))
+          .force('y', d3.forceY().strength(0.3))
+          .force('collision', d3.forceCollide().radius(d => nodeScale(d.size) + 15))
+          .on('tick', ticked);
+        break;
+        
+      case 'circular':
+        simulation = d3.forceSimulation<GraphNode, GraphEdge>(graphData.nodes)
+          .force('link', d3.forceLink<GraphNode, GraphEdge>(graphData.edges)
+            .id(d => d.id)
+            .distance(120)
+          )
+          .force('charge', d3.forceManyBody().strength(-100))
+          .force('radial', d3.forceRadial(Math.min(width, height) * 0.3, width / 2, height / 2).strength(0.8))
+          .force('collision', d3.forceCollide().radius(d => nodeScale(d.size) + 10))
+          .on('tick', ticked);
+        break;
+        
+      case 'radial':
+        simulation = d3.forceSimulation<GraphNode, GraphEdge>(graphData.nodes)
+          .force('link', d3.forceLink<GraphNode, GraphEdge>(graphData.edges)
+            .id(d => d.id)
+            .distance(80)
+          )
+          .force('radial', d3.forceRadial(
+            (d, i) => (i * 30) % (Math.min(width, height) * 0.4), 
+            width / 2, 
+            height / 2
+          ).strength(1))
+          .force('collision', d3.forceCollide().radius(d => nodeScale(d.size) + 10))
+          .on('tick', ticked);
+        break;
+        
+      default: // force-directed
+        simulation = d3.forceSimulation<GraphNode, GraphEdge>(graphData.nodes)
+          .force('link', d3.forceLink<GraphNode, GraphEdge>(graphData.edges)
+            .id(d => d.id)
+            .distance(100)
+          )
+          .force('charge', d3.forceManyBody().strength(-200))
+          .force('center', d3.forceCenter(width / 2, height / 2))
+          .force('collision', d3.forceCollide().radius(d => nodeScale(d.size) + 10))
+          .on('tick', ticked);
+    }
 
     simulationRef.current = simulation;
 
@@ -243,7 +289,48 @@ export const GraphVisualization: React.FC<GraphVisualizationProps> = ({
       simulation.stop();
       simulationRef.current = null;
     };
-  }, [graphData, width, height, onNodeClick, filters]);
+  }, [graphData, width, height, onNodeClick, filters, layoutType]);
+
+  // Expose methods to parent components via ref
+  React.useImperativeHandle(ref, () => ({
+    resetView: () => {
+      if (svgRef.current) {
+        const svg = d3.select(svgRef.current);
+        svg.transition().duration(750).call(
+          d3.zoom<SVGSVGElement, unknown>().transform,
+          d3.zoomIdentity
+        );
+      }
+    },
+    setZoom: (zoomLevel: number) => {
+      if (svgRef.current) {
+        const svg = d3.select(svgRef.current);
+        svg.transition().duration(300).call(
+          d3.zoom<SVGSVGElement, unknown>().transform,
+          d3.zoomIdentity.scale(zoomLevel)
+        );
+      }
+    },
+    fitToView: () => {
+      if (svgRef.current && graphData.nodes.length > 0) {
+        const svg = d3.select(svgRef.current);
+        const bounds = svg.node()?.getBBox();
+        if (bounds) {
+          const fullWidth = width;
+          const fullHeight = height;
+          const widthScale = fullWidth / bounds.width;
+          const heightScale = fullHeight / bounds.height;
+          const scale = Math.min(widthScale, heightScale) * 0.8;
+          const centerX = bounds.x + bounds.width / 2;
+          const centerY = bounds.y + bounds.height / 2;
+          svg.transition().duration(750).call(
+            d3.zoom<SVGSVGElement, unknown>().transform,
+            d3.zoomIdentity.translate(fullWidth / 2, fullHeight / 2).scale(scale).translate(-centerX, -centerY)
+          );
+        }
+      }
+    }
+  }));
 
   if (graphData.nodes.length === 0) {
     return (
@@ -262,6 +349,8 @@ export const GraphVisualization: React.FC<GraphVisualizationProps> = ({
       />
     </div>
   );
-};
+});
+
+GraphVisualization.displayName = 'GraphVisualization';
 
 export default GraphVisualization;
