@@ -127,9 +127,12 @@ export default function Home() {
         <div className="mb-16">
           <h2 className="text-2xl font-semibold text-center mb-8">Graph Testing</h2>
           <TestDataSeeder />
-          <div className="text-center mt-4">
+          <div className="text-center mt-4 space-x-4">
             <Button asChild variant="outline">
               <a href="/graph">View Knowledge Graph</a>
+            </Button>
+            <Button asChild>
+              <a href="/chat">Try Q&A System</a>
             </Button>
           </div>
         </div>

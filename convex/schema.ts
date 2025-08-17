@@ -80,4 +80,24 @@ export default defineSchema({
   }).index('by_status', ['status'])
     .index('by_operation', ['operation_type', 'status'])
     .index('by_created', ['created_timestamp']),
+
+  chat_sessions: defineTable({
+    user_id: v.id('users'),
+    title: v.string(),
+    created_timestamp: v.number(),
+    last_message_timestamp: v.number(),
+  }).index('by_user', ['user_id'])
+    .index('by_created', ['created_timestamp'])
+    .index('by_last_message', ['last_message_timestamp']),
+
+  chat_messages: defineTable({
+    session_id: v.id('chat_sessions'),
+    role: v.union(v.literal('user'), v.literal('assistant')),
+    content: v.string(),
+    timestamp: v.number(),
+    context_concepts: v.optional(v.array(v.id('concepts'))),
+    context_documents: v.optional(v.array(v.id('documents'))),
+  }).index('by_session', ['session_id'])
+    .index('by_timestamp', ['timestamp'])
+    .index('by_session_timestamp', ['session_id', 'timestamp']),
 })
